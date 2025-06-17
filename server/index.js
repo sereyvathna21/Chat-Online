@@ -184,7 +184,7 @@ io.on("connection", async (socket) => {
       const chat = await Chat.findOne({
         _id: chatId,
         "participants.user": socket.user.id,
-      });
+      }).populate("participants.user", "username");
 
       if (!chat) {
         console.log("Access denied to chat:", chatId);
@@ -221,6 +221,37 @@ io.on("connection", async (socket) => {
 
       // Send message to all participants in the chat
       io.to(chatId).emit("receiveMessage", message);
+
+      // Send notifications to offline participants
+      const participants = chat.participants.filter(
+        (p) => p.user._id.toString() !== socket.user.id
+      );
+
+      for (const participant of participants) {
+        const participantSocket = connectedUsers.get(participant.user._id.toString());
+        
+        // If user is online but not in this chat room, send notification
+        if (participantSocket) {
+          io.to(participant.user._id.toString()).emit("newMessageNotification", {
+            chatId: chat._id,
+            chatName: chat.isGroupChat 
+              ? chat.groupName 
+              : socket.user.username,
+            senderName: socket.user.username,
+            message: content.trim(),
+            timestamp: message.timestamp,
+          });
+        }
+      }
+
+      // Update unread count for other participants
+      for (const participant of participants) {
+        io.to(participant.user._id.toString()).emit("updateUnreadCount", {
+          chatId: chat._id,
+          increment: true,
+        });
+      }
+
     } catch (error) {
       console.error("Error sending message:", error);
       socket.emit("error", "Failed to send message");
@@ -316,9 +347,23 @@ io.on("connection", async (socket) => {
         messageIds,
         readAt: new Date(),
       });
+
+      // Update unread count
+      io.to(socket.user.id).emit("updateUnreadCount", {
+        chatId: chatId,
+        reset: true,
+      });
+
     } catch (error) {
       console.error("Error marking messages as read:", error);
     }
+  });
+
+  // Handle notification permission request
+  socket.on("requestNotificationPermission", () => {
+    socket.emit("notificationPermissionResponse", {
+      permission: "granted", // This will be handled on client side
+    });
   });
 
   // Handle disconnect
